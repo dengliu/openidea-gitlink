@@ -1,0 +1,97 @@
+id = "dengliu.gitlink"
+name = "GitLink"
+version = "0.1.0"
+description = "Opens or copies a remote link (or Markdown link) to a file, line selection, directory or commit on GitHub, GitLab, Bitbucket, Codeberg, Forgejo, Gitea, Gitee, Gogs, Azure DevOps, sourcehut, Gerrit, or a custom URL template."
+authors = ["Deng Liu"]
+homepage = "https://github.com/dengliu/openidea-gitlink"
+license = "MIT"
+change-notes = "0.1.0 — initial release: open in browser, copy link, copy Markdown link, copy commit link, smart commit/branch fallback, 11 hosting platforms and custom URL templates."
+categories = ["vcs", "tools"]
+engines.openidea = "^1.1"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+
+[capabilities]
+required = ["project.read", "editor.read", "vcs.read", "clipboard"]
+
+[[contributes.commands]]
+id = "open"
+title = "GitLink: Open in Browser"
+category = "GitLink"
+
+[[contributes.commands]]
+id = "copy"
+title = "GitLink: Copy Link"
+category = "GitLink"
+
+[[contributes.commands]]
+id = "copy-markdown"
+title = "GitLink: Copy Markdown Link"
+category = "GitLink"
+
+[[contributes.commands]]
+id = "open-commit"
+title = "GitLink: Open Commit in Browser"
+category = "GitLink"
+
+[[contributes.commands]]
+id = "copy-commit"
+title = "GitLink: Copy Commit Link"
+category = "GitLink"
+
+[[contributes.commands]]
+id = "copy-commit-markdown"
+title = "GitLink: Copy Commit Markdown Link"
+category = "GitLink"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "open"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "copy"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "copy-markdown"
+
+[[contributes.menus]]
+menu = "projectView.context"
+command = "open"
+
+[[contributes.menus]]
+menu = "projectView.context"
+command = "copy"
+
+[[contributes.menus]]
+menu = "projectView.context"
+command = "copy-markdown"
+
+[[contributes.menus]]
+menu = "editorTab.context"
+command = "open"
+
+[[contributes.menus]]
+menu = "editorTab.context"
+command = "copy"
+
+[[contributes.menus]]
+menu = "editorTab.context"
+command = "copy-markdown"
+
+[[contributes.menus]]
+menu = "tools"
+command = "open"
+
+[[contributes.menus]]
+menu = "tools"
+command = "copy"
+
+[[contributes.menus]]
+menu = "tools"
+command = "copy-markdown"
+
+[contributes.settings]
+title = "GitLink"
+schema = "settings.schema.json"

@@ -1,0 +1,68 @@
+{
+  "properties": {
+    "platform": {
+      "type": "string",
+      "title": "Hosting platform",
+      "description": "Auto-detects from the remote host by default; pick a platform for self-hosted domains or Custom to use the URL templates below.",
+      "enum": [
+        "auto",
+        "github",
+        "gitlab",
+        "bitbucket-cloud",
+        "bitbucket-server",
+        "codeberg",
+        "forgejo",
+        "gitea",
+        "gitee",
+        "gogs",
+        "azure",
+        "srht",
+        "gerrit",
+        "custom"
+      ],
+      "default": "auto"
+    },
+    "remoteName": {
+      "type": "string",
+      "title": "Preferred remote name",
+      "description": "Remote used when the current branch has no upstream (falls back to the first configured remote if missing).",
+      "default": "origin"
+    },
+    "fallbackBranch": {
+      "type": "string",
+      "title": "Fallback branch",
+      "description": "Branch used when HEAD is detached or unpushed and no branch name is available.",
+      "default": "main"
+    },
+    "checkCommitOnRemote": {
+      "type": "boolean",
+      "title": "Fall back to branch when HEAD has unpushed commits",
+      "description": "Uses a commit SHA permalink when HEAD is pushed to its upstream, and the branch name when HEAD is ahead of upstream or has no upstream.",
+      "default": true
+    },
+    "forceHttps": {
+      "type": "boolean",
+      "title": "Use HTTPS URLs",
+      "description": "Generates https:// links even when the remote URL uses http://.",
+      "default": true
+    },
+    "customFileAtBranchTemplate": {
+      "type": "string",
+      "title": "Custom template: file at branch",
+      "description": "Placeholders: {remote:url}, {remote:url:protocol}, {remote:url:host}, {remote:url:path}, {remote:url:path:N}, {object}, {branch}, {file:path}, {file:name}, {line-block:start}...{line:start}...{line:end}...{line-block:end}.",
+      "default": "{remote:url}/{object}/{branch}/{file:path}/{file:name}{line-block:start}#L{line:start}-L{line:end}{line-block:end}"
+    },
+    "customFileAtCommitTemplate": {
+      "type": "string",
+      "title": "Custom template: file at commit",
+      "description": "Same placeholders as file at branch, plus {commit} and {commit:short}.",
+      "default": "{remote:url}/{object}/{commit}/{file:path}/{file:name}{line-block:start}#L{line:start}-L{line:end}{line-block:end}"
+    },
+    "customCommitTemplate": {
+      "type": "string",
+      "title": "Custom template: commit",
+      "description": "Placeholders: {remote:url}, {remote:url:protocol}, {remote:url:host}, {remote:url:path}, {commit}, {commit:short}, {branch}.",
+      "default": "{remote:url}/commit/{commit}"
+    }
+  }
+}

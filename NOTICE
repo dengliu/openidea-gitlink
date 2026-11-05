@@ -1,0 +1,6 @@
+GitLink for OpenIDEA
+Copyright (c) 2026 Deng Liu
+
+This plugin is a Rust/WebAssembly port of the JetBrains GitLink plugin:
+https://github.com/ben-gibson/GitLink
+Copyright (c) 2022 Ben Gibson, licensed under the MIT License.
