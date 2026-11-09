@@ -97,14 +97,16 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 [[package]]
 name = "openidea-plugin"
 version = "0.1.0"
-source = "git+https://github.com/l0ng-ai/openidea#ee5d9121571c8ebe57a6159eabfc5758b817a211"
+source = "git+https://github.com/l0ng-ai/openidea#b746a0a3a99d969c1d9af5c1eae494ee98a52cbd"
 dependencies = [
+ "serde",
+ "serde_json",
  "wit-bindgen",
 ]
 
 [[package]]
 name = "openidea-plugin-dengliu-gitlink"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "openidea-plugin",
 ]
@@ -150,6 +152,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]

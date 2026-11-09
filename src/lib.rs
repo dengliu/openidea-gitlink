@@ -184,6 +184,40 @@ pub struct RemoteUrl {
 impl RemoteUrl {
     /// Parses an SSH, Git, or HTTP(S) remote URL into a normalised web base URL.
     pub fn parse(raw: &str, force_https: bool) -> Option<Self> {
+        Self::parse_with_ssh_config(raw, force_https, None, "")
+    }
+
+    /// Parses a remote URL, resolving SSH host aliases via `settings.host_aliases`
+    /// and (when granted) `~/.ssh/config`.
+    pub fn parse_resolved(raw: &str, settings: &Settings) -> Option<Self> {
+        Self::parse_with_reader(
+            raw,
+            settings.force_https,
+            &settings.host_aliases,
+            &mut |path| host::fs::read_file(path).ok(),
+        )
+    }
+
+    /// Parses a remote URL using explicit `~/.ssh/config` text and `host_aliases` mappings.
+    pub fn parse_with_ssh_config(
+        raw: &str,
+        force_https: bool,
+        ssh_config: Option<&str>,
+        host_aliases: &str,
+    ) -> Option<Self> {
+        Self::parse_with_reader(raw, force_https, host_aliases, &mut |path| {
+            (path == "~/.ssh/config")
+                .then(|| ssh_config.map(str::to_owned))
+                .flatten()
+        })
+    }
+
+    fn parse_with_reader(
+        raw: &str,
+        force_https: bool,
+        host_aliases: &str,
+        read_file: &mut dyn FnMut(&str) -> Option<String>,
+    ) -> Option<Self> {
         let u = raw
             .trim()
             .trim_end_matches('/')
@@ -193,7 +227,7 @@ impl RemoteUrl {
         if u.is_empty() {
             return None;
         }
-        let (raw_scheme, host, path) = if let Some((scheme, rest)) = u.split_once("://") {
+        let (raw_scheme, is_ssh, host, path) = if let Some((scheme, rest)) = u.split_once("://") {
             let scheme = scheme.to_ascii_lowercase();
             if !matches!(scheme.as_str(), "http" | "https" | "ssh" | "git") {
                 return None;
@@ -205,7 +239,8 @@ impl RemoteUrl {
             } else {
                 host_port.split(':').next()?.to_owned()
             };
-            (scheme, host, path)
+            let is_ssh = scheme == "ssh";
+            (scheme, is_ssh, host, path)
         } else {
             // SCP-like syntax: `[user@]host:path` (not a Windows drive `C:\...`).
             let (left, path) = u.split_once(':')?;
@@ -216,20 +251,23 @@ impl RemoteUrl {
             if host.len() <= 1 {
                 return None;
             }
-            ("https".to_owned(), host.to_owned(), path)
+            ("https".to_owned(), true, host.to_owned(), path)
         };
         if host.is_empty() {
             return None;
         }
-        let mut host = host;
+        let mut host = if let Some(mapped) = resolve_host_alias(&host, host_aliases) {
+            mapped
+        } else if is_ssh
+            && !host.starts_with('[')
+            && let Some(resolved) = resolve_ssh_hostname_from_files(&host, read_file)
+        {
+            resolved
+        } else {
+            host
+        };
         let mut path = path.trim_matches('/').to_owned();
-        // Azure DevOps SSH: `git@ssh.dev.azure.com:v3/org/project/repo` → `dev.azure.com/org/project/_git/repo`.
-        if host.eq_ignore_ascii_case("ssh.dev.azure.com") {
-            host = "dev.azure.com".to_owned();
-            if let Some(rest) = path.strip_prefix("v3/") {
-                path = rest.to_owned();
-            }
-        }
+        host = normalize_web_host(&host, is_ssh, &mut path);
         if path.is_empty() {
             return None;
         }
@@ -244,6 +282,369 @@ impl RemoteUrl {
     pub fn base_url(&self) -> String {
         format!("{}://{}/{}", self.scheme, self.host, self.path)
     }
+}
+
+/// Normalises known SSH-only endpoints (`ssh.github.com`, `altssh.gitlab.com`,
+/// `ssh.dev.azure.com`) to their web hosts and strips Azure DevOps `v3/` SSH prefix.
+fn normalize_web_host(host: &str, is_ssh: bool, path: &mut String) -> String {
+    let mut out = if host.eq_ignore_ascii_case("ssh.github.com") {
+        "github.com".to_owned()
+    } else if host.eq_ignore_ascii_case("altssh.gitlab.com") {
+        "gitlab.com".to_owned()
+    } else if host.eq_ignore_ascii_case("ssh.dev.azure.com") {
+        "dev.azure.com".to_owned()
+    } else {
+        host.to_owned()
+    };
+    // Azure DevOps SSH: `git@ssh.dev.azure.com:v3/org/project/repo` → `dev.azure.com/org/project/_git/repo`.
+    if (host.eq_ignore_ascii_case("ssh.dev.azure.com")
+        || (is_ssh && out.eq_ignore_ascii_case("dev.azure.com")))
+        && let Some(rest) = path.strip_prefix("v3/")
+    {
+        *path = rest.to_owned();
+        out = "dev.azure.com".to_owned();
+    }
+    out
+}
+
+/// Resolves `host` against user-configured `alias=hostname` mappings.
+pub fn resolve_host_alias(host: &str, aliases: &str) -> Option<String> {
+    for entry in aliases.split([',', ';', '\n', '\r']) {
+        let entry = entry.trim();
+        if entry.is_empty() || entry.starts_with('#') {
+            continue;
+        }
+        let Some((pat, target)) = entry.split_once('=').or_else(|| entry.split_once(':')) else {
+            continue;
+        };
+        let pat = strip_quotes(pat.trim());
+        let target = strip_quotes(target.trim());
+        if pat.is_empty() || target.is_empty() {
+            continue;
+        }
+        if glob_match(pat, host) {
+            return Some(expand_ssh_hostname(target, host));
+        }
+    }
+    None
+}
+
+/// Resolves an SSH host `alias` against the contents of an OpenSSH `config` file.
+pub fn resolve_ssh_hostname(alias: &str, config: &str) -> Option<String> {
+    resolve_ssh_hostname_from_files(alias, &mut |path| {
+        (path == "~/.ssh/config").then(|| config.to_owned())
+    })
+}
+
+fn resolve_ssh_hostname_from_files(
+    alias: &str,
+    read_file: &mut dyn FnMut(&str) -> Option<String>,
+) -> Option<String> {
+    let mut out = None;
+    parse_ssh_config_file("~/.ssh/config", alias, read_file, &mut out, 0);
+    out
+}
+
+fn parse_ssh_config_file(
+    path: &str,
+    alias: &str,
+    read_file: &mut dyn FnMut(&str) -> Option<String>,
+    hostname: &mut Option<String>,
+    depth: usize,
+) {
+    if depth >= 8 || hostname.is_some() {
+        return;
+    }
+    let Some(contents) = read_file(path) else {
+        return;
+    };
+    let base_dir = path.rsplit_once('/').map_or("~/.ssh", |(d, _)| d);
+    let mut active = true;
+    for raw_line in contents.lines() {
+        if hostname.is_some() {
+            return;
+        }
+        let line = strip_ssh_comment(raw_line);
+        let Some((key, value)) = split_ssh_directive(line) else {
+            continue;
+        };
+        match key.to_ascii_lowercase().as_str() {
+            "host" => {
+                let tokens = split_ssh_args(value);
+                // Support both standard `Host <patterns...>` and single-line flattened
+                // `Host <alias> HostName <host> ...` blocks.
+                let kw_idx = tokens.iter().position(|t| is_ssh_inline_keyword(t));
+                let patterns = match kw_idx {
+                    Some(idx) => &tokens[..idx],
+                    None => &tokens[..],
+                };
+                active = pattern_list_matches(patterns.iter().map(String::as_str), alias);
+                if active
+                    && let Some(idx) = kw_idx
+                    && let Some(h) = find_inline_hostname(&tokens[idx..], alias)
+                {
+                    *hostname = Some(h);
+                    return;
+                }
+            }
+            "match" => {
+                active = eval_ssh_match(value, alias, hostname.as_deref());
+            }
+            _ if !active => {}
+            "include" => {
+                for inc in split_ssh_args(value) {
+                    if inc.contains(['*', '?']) {
+                        continue;
+                    }
+                    let inc_path = if inc.starts_with('/') || inc.starts_with("~/") {
+                        inc
+                    } else {
+                        format!("{base_dir}/{inc}")
+                    };
+                    parse_ssh_config_file(&inc_path, alias, read_file, hostname, depth + 1);
+                    if hostname.is_some() {
+                        return;
+                    }
+                }
+            }
+            "hostname" => {
+                let raw = strip_quotes(value);
+                if !raw.is_empty() {
+                    *hostname = Some(expand_ssh_hostname(raw, alias));
+                    return;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn is_ssh_inline_keyword(token: &str) -> bool {
+    let key = token.split('=').next().unwrap_or(token);
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "hostname"
+            | "user"
+            | "port"
+            | "identityfile"
+            | "identitiesonly"
+            | "proxyjump"
+            | "proxycommand"
+            | "forwardagent"
+            | "stricthostkeychecking"
+            | "userknownhostsfile"
+            | "preferredauthentications"
+            | "addkeystoagent"
+            | "usekeychain"
+    )
+}
+
+fn find_inline_hostname(tokens: &[String], alias: &str) -> Option<String> {
+    let mut i = 0;
+    while i < tokens.len() {
+        let tok = tokens[i].as_str();
+        if let Some((k, v)) = tok.split_once('=') {
+            if k.eq_ignore_ascii_case("hostname") {
+                let v = strip_quotes(v);
+                if !v.is_empty() {
+                    return Some(expand_ssh_hostname(v, alias));
+                }
+            }
+            i += 1;
+        } else if tok.eq_ignore_ascii_case("hostname") {
+            let v = strip_quotes(tokens.get(i + 1)?.as_str());
+            if !v.is_empty() {
+                return Some(expand_ssh_hostname(v, alias));
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+fn eval_ssh_match(value: &str, alias: &str, current_hostname: Option<&str>) -> bool {
+    let tokens = split_ssh_args(value);
+    if tokens.is_empty() {
+        return false;
+    }
+    let effective_host = current_hostname.unwrap_or(alias);
+    let mut i = 0;
+    while i < tokens.len() {
+        let tok = tokens[i].as_str();
+        let (raw_key, inline_val) = match tok.split_once('=') {
+            Some((k, v)) => (k, Some(v)),
+            None => (tok, None),
+        };
+        let (negated, key) = match raw_key.strip_prefix('!') {
+            Some(k) => (true, k.to_ascii_lowercase()),
+            None => (false, raw_key.to_ascii_lowercase()),
+        };
+        match key.as_str() {
+            "all" | "canonical" | "final" => {
+                if negated {
+                    return false;
+                }
+                i += 1;
+            }
+            "host" | "originalhost" => {
+                let arg = match inline_val {
+                    Some(v) => {
+                        i += 1;
+                        v
+                    }
+                    None => {
+                        let Some(next) = tokens.get(i + 1) else {
+                            return false;
+                        };
+                        i += 2;
+                        next.as_str()
+                    }
+                };
+                let target = if key == "host" { effective_host } else { alias };
+                let ok = pattern_list_matches(arg.split(','), target);
+                if ok == negated {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+fn expand_ssh_hostname(raw: &str, alias: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('%') => out.push('%'),
+            Some('h' | 'H' | 'n') => out.push_str(alias),
+            Some(other) => {
+                out.push('%');
+                out.push(other);
+            }
+            None => out.push('%'),
+        }
+    }
+    out
+}
+
+fn strip_ssh_comment(line: &str) -> &str {
+    let mut quote: Option<char> = None;
+    for (i, ch) in line.char_indices() {
+        match quote {
+            Some(q) if ch == q => quote = None,
+            Some(_) => {}
+            None if ch == '"' || ch == '\'' => quote = Some(ch),
+            None if ch == '#' => return &line[..i],
+            None => {}
+        }
+    }
+    line
+}
+
+fn strip_quotes(s: &str) -> &str {
+    let s = s.trim();
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+    {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
+fn split_ssh_directive(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let end = line.find(|c: char| c.is_ascii_whitespace() || c == '=')?;
+    let key = &line[..end];
+    let rest = line[end..].trim_start();
+    let rest = rest.strip_prefix('=').map_or(rest, str::trim_start);
+    Some((key, rest))
+}
+
+fn split_ssh_args(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut in_token = false;
+    for ch in input.chars() {
+        match quote {
+            Some(q) if ch == q => quote = None,
+            Some(_) => cur.push(ch),
+            None if ch == '"' || ch == '\'' => {
+                quote = Some(ch);
+                in_token = true;
+            }
+            None if ch.is_ascii_whitespace() => {
+                if in_token {
+                    args.push(std::mem::take(&mut cur));
+                    in_token = false;
+                }
+            }
+            None => {
+                cur.push(ch);
+                in_token = true;
+            }
+        }
+    }
+    if in_token {
+        args.push(cur);
+    }
+    args
+}
+
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0, 0);
+    let (mut star_pi, mut star_ti) = (None, 0);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi].eq_ignore_ascii_case(&t[ti])) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star_pi = Some(pi);
+            pi += 1;
+            star_ti = ti;
+        } else if let Some(sp) = star_pi {
+            pi = sp + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+fn pattern_list_matches<'a>(patterns: impl IntoIterator<Item = &'a str>, candidate: &str) -> bool {
+    let mut matched = false;
+    for raw in patterns {
+        if raw.is_empty() {
+            continue;
+        }
+        if let Some(neg) = raw.strip_prefix('!') {
+            if glob_match(neg, candidate) {
+                return false;
+            }
+        } else if glob_match(raw, candidate) {
+            matched = true;
+        }
+    }
+    matched
 }
 
 /// 1-based inclusive line range.
@@ -367,6 +768,7 @@ pub struct Settings {
     pub fallback_branch: String,
     pub check_commit_on_remote: bool,
     pub force_https: bool,
+    pub host_aliases: String,
     pub custom_file_at_branch: String,
     pub custom_file_at_commit: String,
     pub custom_commit: String,
@@ -380,6 +782,7 @@ impl Default for Settings {
             fallback_branch: "main".into(),
             check_commit_on_remote: true,
             force_https: true,
+            host_aliases: String::new(),
             custom_file_at_branch:
                 "{remote:url}/{object}/{branch}/{file:path}/{file:name}{line-block:start}#L{line:start}-L{line:end}{line-block:end}"
                     .into(),
@@ -414,6 +817,11 @@ impl Settings {
         }
         if let Some(v) = host::setting_bool("forceHttps") {
             s.force_https = v;
+        }
+        if let Some(v) = host::setting_string("hostAliases")
+            && !v.trim().is_empty()
+        {
+            s.host_aliases = v;
         }
         if let Some(v) = host::setting_string("customFileAtBranchTemplate")
             && !v.trim().is_empty()
@@ -905,7 +1313,7 @@ impl Plugin for GitLink {
         let settings = Settings::load();
         let (remote_name, raw_url) =
             select_remote(&remotes, &status, &settings.remote_name).ok_or("no git remote found")?;
-        let remote = RemoteUrl::parse(raw_url, settings.force_https).ok_or_else(|| {
+        let remote = RemoteUrl::parse_resolved(raw_url, &settings).ok_or_else(|| {
             format!("remote '{remote_name}' ({raw_url}) does not have a supported web URL")
         })?;
         let platform = Platform::from_setting(&settings.platform, &remote.host);
@@ -1410,5 +1818,127 @@ mod tests {
             commit_md,
             format!("[b032a070](https://github.com/l0ng-ai/openidea/commit/{COMMIT})")
         );
+    }
+
+    #[test]
+    fn resolves_ssh_config_aliases_and_normalizes_ssh_endpoints() {
+        let ssh_config = "\
+# Personal GitHub account
+Host github-personal
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_ecdsa
+    IdentitiesOnly yes
+
+# GitLab over port 443 SSH endpoint
+Host gl-work
+    HostName=altssh.gitlab.com
+    User git
+
+# GitHub over port 443 SSH endpoint
+Host gh-443
+    HostName \"ssh.github.com\"
+    Port 443
+
+# Azure DevOps alias
+Host ado-work
+    HostName ssh.dev.azure.com
+
+# Wildcard fallback must not override earlier match
+Host *
+    HostName fallback.example.com
+";
+
+        assert_eq!(
+            RemoteUrl::parse_with_ssh_config(
+                "git@github-personal:l0ng-ai/openidea.git",
+                true,
+                Some(ssh_config),
+                "",
+            ),
+            Some(RemoteUrl {
+                scheme: "https".into(),
+                host: "github.com".into(),
+                path: "l0ng-ai/openidea".into(),
+            })
+        );
+        assert_eq!(
+            RemoteUrl::parse_with_ssh_config(
+                "git@github-personal:dengliu/openidea.git",
+                true,
+                Some(ssh_config),
+                "",
+            ),
+            Some(RemoteUrl {
+                scheme: "https".into(),
+                host: "github.com".into(),
+                path: "dengliu/openidea".into(),
+            })
+        );
+
+        // Single-line flattened Host + HostName syntax.
+        let single_line = "Host github-personal    HostName github.com    User git    IdentityFile ~/.ssh/id_ecdsa    IdentitiesOnly yes";
+        assert_eq!(
+            RemoteUrl::parse_with_ssh_config(
+                "git@github-personal:l0ng-ai/openidea.git",
+                true,
+                Some(single_line),
+                "",
+            ),
+            Some(RemoteUrl {
+                scheme: "https".into(),
+                host: "github.com".into(),
+                path: "l0ng-ai/openidea".into(),
+            })
+        );
+
+        // Non-GitHub SSH alias resolves to gitlab.com and detects Platform::GitLab.
+        let gl = RemoteUrl::parse_with_ssh_config(
+            "ssh://git@gl-work:443/group/repo.git",
+            true,
+            Some(ssh_config),
+            "",
+        )
+        .unwrap();
+        assert_eq!(gl.host, "gitlab.com");
+        assert_eq!(Platform::detect(&gl.host), Platform::GitLab);
+
+        // ssh.github.com normalizes to github.com.
+        let gh_443 =
+            RemoteUrl::parse_with_ssh_config("git@gh-443:org/repo.git", true, Some(ssh_config), "")
+                .unwrap();
+        assert_eq!(gh_443.host, "github.com");
+
+        // Azure DevOps alias normalizes to dev.azure.com and strips v3/.
+        let ado = RemoteUrl::parse_with_ssh_config(
+            "git@ado-work:v3/company/project/repo",
+            true,
+            Some(ssh_config),
+            "",
+        )
+        .unwrap();
+        assert_eq!(ado.host, "dev.azure.com");
+        assert_eq!(ado.path, "company/project/repo");
+        assert_eq!(Platform::detect(&ado.host), Platform::Azure);
+
+        // HTTPS URLs do not consult ~/.ssh/config.
+        let https = RemoteUrl::parse_with_ssh_config(
+            "https://custom.internal/org/repo.git",
+            true,
+            Some(ssh_config),
+            "",
+        )
+        .unwrap();
+        assert_eq!(https.host, "custom.internal");
+
+        // Explicit hostAliases setting overrides ~/.ssh/config.
+        let overridden = RemoteUrl::parse_with_ssh_config(
+            "git@github-personal:dengliu/openidea.git",
+            true,
+            Some(ssh_config),
+            "github-personal=ghe.company.com, gl-*=gitlab.company.com",
+        )
+        .unwrap();
+        assert_eq!(overridden.host, "ghe.company.com");
     }
 }

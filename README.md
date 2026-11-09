@@ -43,6 +43,7 @@ By default, when `HEAD` has been pushed to its upstream remote branch, GitLink g
 | `editor.read` | Reads the active editor's file path and selected line range (`#L<start>-L<end>`). |
 | `vcs.read` | Reads the repository's configured remotes (`vcs.remotes`) and branch/commit/upstream status (`vcs.status`). |
 | `clipboard` | Copies generated URLs and Markdown links to the system clipboard (`ui.copy-to-clipboard`). |
+| `fs.read:~/.ssh/config` *(optional)* | Resolves SSH `Host` aliases (e.g. `git@github-personal:owner/repo.git` → `github.com`) from `~/.ssh/config` when the host has not already resolved them. |
 
 ## Building & Testing
 

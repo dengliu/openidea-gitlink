@@ -46,6 +46,12 @@
       "description": "Generates https:// links even when the remote URL uses http://.",
       "default": true
     },
+    "hostAliases": {
+      "type": "string",
+      "title": "SSH / custom host aliases",
+      "description": "Comma- or newline-separated alias=hostname mappings (e.g. github-personal=github.com, gitlab-work=gitlab.com). Overrides ~/.ssh/config.",
+      "default": ""
+    },
     "customFileAtBranchTemplate": {
       "type": "string",
       "title": "Custom template: file at branch",
