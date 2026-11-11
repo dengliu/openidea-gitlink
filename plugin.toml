@@ -1,11 +1,15 @@
 id = "dengliu.gitlink"
 name = "GitLink"
-version = "0.1.1"
+version = "0.1.2"
+icon = "icons/gitlink-logo.svg"
 description = "Opens or copies a remote link (or Markdown link) to a file, line selection, directory or commit on GitHub, GitLab, Bitbucket, Codeberg, Forgejo, Gitea, Gitee, Gogs, Azure DevOps, sourcehut, Gerrit, or a custom URL template."
 authors = ["Deng Liu"]
 homepage = "https://github.com/dengliu/openidea-gitlink"
 license = "MIT"
-change-notes = "0.1.1 — resolve SSH Host aliases from ~/.ssh/config and hostAliases setting, and normalize SSH-only endpoints (ssh.github.com, altssh.gitlab.com, ssh.dev.azure.com)."
+change-notes = """
+0.1.2 — add custom GitLink plugin icon (icons/gitlink-logo.svg).
+0.1.1 — resolve SSH Host aliases from ~/.ssh/config and hostAliases setting, and normalize SSH-only endpoints (ssh.github.com, altssh.gitlab.com, ssh.dev.azure.com).
+"""
 categories = ["vcs", "tools"]
 engines.openidea = "^1.3"
 wasm = "dist/plugin.wasm"

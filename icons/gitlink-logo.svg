@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <defs>
+    <linearGradient id="gitlink-bg" x1="4" y1="2" x2="20" y2="22" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF5E3A" />
+      <stop offset="1" stop-color="#E04022" />
+    </linearGradient>
+  </defs>
+  <rect x="3.7" y="3.7" width="16.6" height="16.6" rx="3.8" transform="rotate(45 12 12)" fill="url(#gitlink-bg)" />
+  <g
+    transform="translate(12 12) rotate(-45)"
+    fill="none"
+    stroke="#FFFFFF"
+    stroke-width="1.9"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M-1.4 -2.5H-3.5A2.5 2.5 0 0 0 -3.5 2.5H-1.4" />
+    <path d="M1.4 -2.5H3.5A2.5 2.5 0 0 1 3.5 2.5H1.4" />
+    <line x1="-2.2" y1="0" x2="2.2" y2="0" />
+  </g>
+</svg>

@@ -1,3 +1,7 @@
+<p align="center">
+  <img alt="GitLink" src="./icons/gitlink-logo.svg" width="80" />
+</p>
+
 # GitLink for OpenIDEA
 
 An [OpenIDEA](https://github.com/l0ng-ai/openidea) plugin (`dengliu.gitlink`) that opens or copies a remote link (or Markdown link) to a file, line selection, directory, or commit in your browser.
