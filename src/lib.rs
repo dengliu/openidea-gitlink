@@ -6,8 +6,8 @@
 //! Ported from <https://github.com/ben-gibson/GitLink>.
 
 use openidea_plugin::{
-    Error, Invocation, NotificationLevel, Plugin, Project, Range, RepositoryStatus, host,
-    register_plugin,
+    Error, FileKind, Invocation, NotificationLevel, PickItem, Plugin, Project, Range,
+    RepositoryInfo, host, register_plugin,
 };
 
 #[derive(Default)]
@@ -1115,7 +1115,7 @@ fn azure_file_url(
 /// `settings.remote_name` (`origin`), else the first configured remote.
 pub fn select_remote<'a>(
     remotes: &'a [(String, String)],
-    status: &RepositoryStatus,
+    status: &RepositoryInfo,
     preferred: &str,
 ) -> Option<&'a (String, String)> {
     if let Some(up) = &status.upstream
@@ -1134,7 +1134,7 @@ pub fn select_remote<'a>(
 /// is on and the platform expects commits to be reachable from the remote
 /// branch, requires an upstream with `ahead == 0` (or a detached `HEAD`).
 pub fn resolve_commit(
-    status: &RepositoryStatus,
+    status: &RepositoryInfo,
     platform: Platform,
     settings: &Settings,
 ) -> Option<String> {
@@ -1148,26 +1148,11 @@ pub fn resolve_commit(
     (status.upstream.is_some() && status.ahead == 0).then_some(commit)
 }
 
-pub fn resolve_branch(status: &RepositoryStatus, settings: &Settings) -> String {
+pub fn resolve_branch(status: &RepositoryInfo, settings: &Settings) -> String {
     status
         .branch
         .clone()
         .unwrap_or_else(|| settings.fallback_branch.clone())
-}
-
-fn normalize_slashes(path: &str) -> String {
-    path.replace('\\', "/")
-}
-
-fn relative_to_root(repo_root: &str, path: &str) -> Option<String> {
-    let root = normalize_slashes(repo_root);
-    let root = root.trim_end_matches('/');
-    let p = normalize_slashes(path);
-    let p = p.trim_end_matches('/');
-    if p == root {
-        return Some(String::new());
-    }
-    p.strip_prefix(root)?.strip_prefix('/').map(str::to_owned)
 }
 
 fn is_hex_sha(s: &str) -> bool {
@@ -1175,14 +1160,77 @@ fn is_hex_sha(s: &str) -> bool {
     (7..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Resolves the target (`LinkTarget`) and its Markdown label from the command,
-/// optional argument, and focused editor.
+struct Selection {
+    path: Option<String>,
+    lines: Option<LineSelection>,
+}
+
+impl Selection {
+    fn from_invocation(ctx: &Invocation, arg: Option<&str>) -> Result<Self, Error> {
+        let path = arg
+            .filter(|a| !a.is_empty() && !is_hex_sha(a))
+            .map(str::to_owned)
+            .or_else(|| ctx.selected_paths().into_iter().next());
+        if path.is_some() {
+            return Ok(Self { path, lines: None });
+        }
+        match ctx.editor() {
+            Some(editor) => Ok(Self {
+                path: Some(editor.path()),
+                lines: LineSelection::from_ranges(&editor.selections()?),
+            }),
+            None => Ok(Self {
+                path: None,
+                lines: None,
+            }),
+        }
+    }
+
+    fn repository(&self, project: &Project) -> Result<Option<RepositoryInfo>, Error> {
+        if let Some(path) = &self.path {
+            return project
+                .vcs_repository_at(path)?
+                .map(Some)
+                .ok_or_else(|| Error::Invalid(format!("{path} is not in a Git repository")));
+        }
+        let roots = project.vcs_roots()?;
+        let root = match roots.as_slice() {
+            [] => return Err("the project has no Git repositories".into()),
+            [root] => root.clone(),
+            _ => {
+                let items = roots
+                    .iter()
+                    .map(|r| PickItem::new(r, r))
+                    .collect::<Vec<_>>();
+                let Some(root) = host::pick("Choose a Git repository", &items)? else {
+                    return Ok(None);
+                };
+                root
+            }
+        };
+        // A project opened below a worktree root may only query paths inside the project.
+        let project_root = project.root()?;
+        let lookup = if std::path::Path::new(&project_root).starts_with(&root) {
+            &project_root
+        } else {
+            &root
+        };
+        project
+            .vcs_repository_at(lookup)?
+            .filter(|r| r.root == root)
+            .map(Some)
+            .ok_or_else(|| {
+                Error::NotFound(format!("Git repository is no longer available: {root}"))
+            })
+    }
+}
+
 fn resolve_context(
     cmd: &str,
     arg: Option<&str>,
-    ctx: &Invocation,
+    selection: &Selection,
     project: &Project,
-    status: &RepositoryStatus,
+    status: &RepositoryInfo,
     platform: Platform,
     settings: &Settings,
 ) -> Result<(LinkTarget, String), Error> {
@@ -1222,33 +1270,14 @@ fn resolve_context(
         ));
     }
 
-    let (abs_path, lines) = match arg.map(str::trim).filter(|a| !a.is_empty()) {
-        // Explicit path (Project View or Editor Tab context menu): no line selection.
-        Some(path) => (path.to_owned(), None),
-        None => match ctx.editor() {
-            Some(editor) => {
-                let sels = editor.selections().unwrap_or_default();
-                (editor.path(), LineSelection::from_ranges(&sels))
-            }
-            None => (status.root.clone(), None),
-        },
+    let file = match &selection.path {
+        Some(path) => RepoFile::from_rel_path(
+            &status.relative_path,
+            project.stat(path)?.kind == FileKind::Directory,
+        ),
+        None => RepoFile::root(),
     };
-
-    let rel = relative_to_root(&status.root, &abs_path).ok_or_else(|| {
-        Error::Invalid(format!("{abs_path} is outside repository {}", status.root))
-    })?;
-
-    let is_directory = if rel.is_empty() {
-        true
-    } else {
-        match project.read_file(&abs_path) {
-            Ok(_) => false,
-            Err(Error::Failed(m)) if m.contains("not a file") => true,
-            Err(_) => false,
-        }
-    };
-
-    let file = RepoFile::from_rel_path(&rel, is_directory);
+    let lines = selection.lines;
     let label = match lines.filter(|_| !file.is_directory) {
         Some(sel) if sel.start == sel.end => {
             format!("{}:{}", file.display_name(&status.root), sel.start)
@@ -1277,13 +1306,6 @@ fn resolve_context(
     Ok((target, label))
 }
 
-fn current_project(ctx: &Invocation) -> Option<Project> {
-    if let Some(p) = ctx.project() {
-        return Some(p);
-    }
-    host::projects().ok()?.into_iter().next()
-}
-
 impl Plugin for GitLink {
     fn run_command(
         &mut self,
@@ -1302,23 +1324,28 @@ impl Plugin for GitLink {
         ) {
             return Err(Error::NotFound(format!("command {id}")));
         }
-        let project = current_project(ctx).ok_or("no project is open")?;
-        let status = project
-            .vcs_status()?
-            .ok_or("the project is not in a git repository")?;
-        let remotes = project.vcs_remotes()?;
-        if remotes.is_empty() {
+        let selection = Selection::from_invocation(ctx, arg)?;
+        let project = selection
+            .path
+            .as_deref()
+            .and_then(host::project_of)
+            .or_else(|| ctx.project())
+            .ok_or("no project is open")?;
+        let Some(status) = selection.repository(&project)? else {
+            return Ok(None);
+        };
+        if status.remotes.is_empty() {
             return Err("the repository has no configured git remotes".into());
         }
         let settings = Settings::load();
-        let (remote_name, raw_url) =
-            select_remote(&remotes, &status, &settings.remote_name).ok_or("no git remote found")?;
+        let (remote_name, raw_url) = select_remote(&status.remotes, &status, &settings.remote_name)
+            .ok_or("no git remote found")?;
         let remote = RemoteUrl::parse_resolved(raw_url, &settings).ok_or_else(|| {
             format!("remote '{remote_name}' ({raw_url}) does not have a supported web URL")
         })?;
         let platform = Platform::from_setting(&settings.platform, &remote.host);
         let (target, label) =
-            resolve_context(id, arg, ctx, &project, &status, platform, &settings)?;
+            resolve_context(id, arg, &selection, &project, &status, platform, &settings)?;
         let url = build_url(platform, &remote, &target, &settings);
 
         match id {
@@ -1740,16 +1767,18 @@ mod tests {
             "fn main() {}\n// line 2\n",
             &[(0, 0, 1, 5)],
         );
-        host.set_vcs_remotes(&[("origin", "git@github.com:l0ng-ai/openidea.git")]);
-        host.set_vcs_status(Some(RepositoryStatus {
+        host.set_vcs_repositories(vec![RepositoryInfo {
+            remotes: vec![(
+                "origin".into(),
+                "git@github.com:l0ng-ai/openidea.git".into(),
+            )],
             root: "/project".into(),
             branch: Some("main".into()),
             commit: Some(COMMIT.into()),
             upstream: Some("origin/main".into()),
             ahead: 0,
-            behind: 0,
-            ..RepositoryStatus::default()
-        }));
+            ..RepositoryInfo::default()
+        }]);
 
         // Pushed HEAD: uses the commit SHA permalink.
         let url = GitLink
@@ -1782,15 +1811,18 @@ mod tests {
         assert_eq!(host.opened_urls(), [url]);
 
         // Unpushed commit (`ahead > 0`): falls back to the branch ref so the link does not 404.
-        host.set_vcs_status(Some(RepositoryStatus {
+        host.set_vcs_repositories(vec![RepositoryInfo {
+            remotes: vec![(
+                "origin".into(),
+                "git@github.com:l0ng-ai/openidea.git".into(),
+            )],
             root: "/project".into(),
             branch: Some("feat/gitlink".into()),
             commit: Some(COMMIT.into()),
             upstream: Some("origin/feat/gitlink".into()),
             ahead: 1,
-            behind: 0,
-            ..RepositoryStatus::default()
-        }));
+            ..RepositoryInfo::default()
+        }]);
         let branch_url = GitLink
             .run_command("copy", &host.invocation(), None)
             .unwrap()

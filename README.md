@@ -39,13 +39,18 @@ Contributed to the **Editor context menu**, **Project View context menu**, **Edi
 
 By default, when `HEAD` has been pushed to its upstream remote branch, GitLink generates a permanent link using the commit SHA. When `HEAD` has unpushed commits (or no upstream), it falls back to the branch name so the link does not 404.
 
+GitLink 0.2 requires OpenIDEA plugin API 1.16. In a folder containing multiple Git repositories,
+the right-clicked file or directory takes precedence over the active editor. The innermost mapped
+worktree supplies both the ref and the remote. With no file context, GitLink uses the only repository
+or asks you to choose one; it never substitutes a different repository for a file outside Git.
+
 ## Capabilities
 
 | Capability | Why it is needed |
 | --- | --- |
 | `project.read` | Checks whether a selected path inside the project is a file or directory. |
 | `editor.read` | Reads the active editor's file path and selected line range (`#L<start>-L<end>`). |
-| `vcs.read` | Reads the repository's configured remotes (`vcs.remotes`) and branch/commit/upstream status (`vcs.status`). |
+| `vcs.read` | Looks up the selected path's repository, reference and remotes (`vcs.repository-at`), or lists available repositories (`vcs.roots`). |
 | `clipboard` | Copies generated URLs and Markdown links to the system clipboard (`ui.copy-to-clipboard`). |
 | `fs.read:~/.ssh/config` *(optional)* | Resolves SSH `Host` aliases (e.g. `git@github-personal:owner/repo.git` → `github.com`) from `~/.ssh/config` when the host has not already resolved them. |
 
@@ -55,6 +60,7 @@ By default, when `HEAD` has been pushed to its upstream remote branch, GitLink g
 cargo test
 openidea-plugin build
 openidea-plugin check
+python3 tests/worktrees.py /path/to/openidea-server
 ```
 
 ## License
