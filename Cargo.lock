@@ -97,7 +97,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 [[package]]
 name = "openidea-plugin"
 version = "0.1.0"
-source = "git+https://github.com/l0ng-ai/openidea#b746a0a3a99d969c1d9af5c1eae494ee98a52cbd"
+source = "git+https://github.com/l0ng-ai/openidea?rev=d4a90a3243fc521c8f6b8963afdb4445a7f9ebcb#d4a90a3243fc521c8f6b8963afdb4445a7f9ebcb"
 dependencies = [
  "serde",
  "serde_json",
@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "openidea-plugin-dengliu-gitlink"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "openidea-plugin",
 ]

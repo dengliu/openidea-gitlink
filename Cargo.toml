@@ -1,6 +1,6 @@
 [package]
 name = "openidea-plugin-dengliu-gitlink"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 publish = false
@@ -11,7 +11,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-openidea-plugin = { git = "https://github.com/l0ng-ai/openidea" }
+openidea-plugin = { git = "https://github.com/l0ng-ai/openidea", rev = "d4a90a3243fc521c8f6b8963afdb4445a7f9ebcb" }
 
 [profile.release]
 opt-level = "s"
